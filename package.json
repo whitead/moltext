@@ -1,0 +1,12 @@
+{
+  "name": "rdkit-ascii-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@rdkit/rdkit": "^2024.3.5-1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "wrangler": "^4.30.0"
+  }
+}

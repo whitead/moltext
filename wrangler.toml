@@ -1,0 +1,13 @@
+name = "moltext"
+main = "src/worker.ts"
+compatibility_date = "2025-08-09"
+# need this for rdkit us of fs/path
+compatibility_flags = ["nodejs_compat"]
+
+# Built-in Rate Limiting binding
+[[unsafe.bindings]]
+name = "PUBLIC_RL"
+type = "ratelimit"
+namespace_id = "1"         # we just make up - per app. Any positive integer
+# 100 requests per 60s
+simple = { limit = 100, period = 60 }
