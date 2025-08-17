@@ -258,9 +258,48 @@ export default {
       return new Response("429 Too Many Requests – limit is 100/min", { status: 429, headers });
     }
 
+    const nameParam = url.searchParams.get("name");
+    const smiParam = url.searchParams.get("smi");
+    const echoSmi = url.searchParams.get("echo") === "1";
+    if (nameParam && smiParam) {
+      return new Response("Both 'name' and 'smi' provided; supply only one.", {
+        status: 422,
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    let smi = smiParam || "";
+    if (!smi && nameParam) {
+      try {
+        const r = await fetch(env.OPSIN_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: String(nameParam) })
+        });
+        if (!r.ok) {
+          return new Response(`Name-to-SMILES conversion failed (HTTP ${r.status})`, {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" }
+          });
+        }
+        const data = await r.json() as { success?: boolean; smiles?: string };
+        if (!data?.success || !data?.smiles) {
+          return new Response("Name-to-SMILES conversion failed", {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" }
+          });
+        }
+        smi = String(data.smiles);
+      } catch (e) {
+        return new Response("Name-to-SMILES conversion error", {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" }
+        });
+      }
+    }
+
     const RDKit = await RDKitReady;       // already initialized at startup
-    const smi = url.searchParams.get("smi");
-    if (!smi) return new Response("Usage: /?smi=c1ccccc1", { status: 400 });
+    if (!smi) return new Response("Usage: /?smi=c1ccccc1 or /?name=acetamide", { status: 400 });
 
     const mol = RDKit.get_mol(String(smi));
     if (!mol) return new Response("Invalid SMILES", { status: 400 });
@@ -268,7 +307,13 @@ export default {
       if (!mol.has_coords()) mol.set_new_coords(true);
       const molblock = mol.get_molblock();
       const art = new AsciiMolDrawer(1.0, url.searchParams.get("ascii") !== "1").drawMolblock(molblock);
-      return new Response(art, { headers: { "content-type": "text/plain; charset=utf-8" } });
+      let responseContent;
+      if (echoSmi) {
+        responseContent = `${smi}\n${art}\n`;
+      } else {
+        responseContent = `${art}\n`;
+      }
+      return new Response(responseContent, { headers: { "content-type": "text/plain; charset=utf-8" } });
     } finally { mol.delete(); }
   }
 }
@@ -277,4 +322,5 @@ interface Env {
   PUBLIC_RL: {
     limit(input: { key: string }): Promise<{ success: boolean; remaining?: number; reset?: number }>;
   };
+  OPSIN_URL: string;
 }
