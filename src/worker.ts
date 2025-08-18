@@ -157,8 +157,24 @@ class AsciiMolDrawer {
       const [x2, y2] = pts[b.j];
       const mx = Math.trunc((x1 + x2) / 2);
       const my = Math.trunc((y1 + y2) / 2);
-      const ch = this._bondChar([x1, y1], [x2, y2], b.order);
+      // Treat V2000 aromatic bonds (4) as double for display
+      const order = (b.order === 4 ? 2 : b.order);
+      const ch = this._bondChar([x1, y1], [x2, y2], order);
       setLine(grid, my + oy, mx + ox, ch, useUnicode);
+
+      // Diagonal double/triple: add parallel slash(es) next to the midpoint
+      const isDiag = (x1 !== x2) && (y1 !== y2);
+      if (isDiag && order >= 2) {
+        if (ch === this.cs.slash) {
+          // slope negative: put second line on same line; third (if any) up-left
+          setLine(grid, my + oy, mx + ox + 1, ch, useUnicode);
+          if (order >= 3) setLine(grid, my + oy - 1, mx + ox - 1, ch, useUnicode);
+        } else {
+          // backslash: put second on same line; third (if any) up-right
+          setLine(grid, my + oy, mx + ox - 1, ch, useUnicode);
+          if (order >= 3) setLine(grid, my + oy - 1, mx + ox + 1, ch, useUnicode);
+        }
+      }
     }
 
     // Draw atoms (labels) — atoms overwrite
@@ -223,8 +239,12 @@ class AsciiMolDrawer {
     for (const b of bonds) {
       const [x1, y1] = pts[b.i]; const [x2, y2] = pts[b.j];
       const mx = Math.trunc((x1 + x2) / 2), my = Math.trunc((y1 + y2) / 2);
-      minx = Math.min(minx, mx); maxx = Math.max(maxx, mx);
-      miny = Math.min(miny, my); maxy = Math.max(maxy, my);
+      // make room for the extra parallel slash on diagonal double/triple
+      const displayOrder = (b.order === 4 ? 2 : b.order);
+      const diag = (x1 !== x2) && (y1 !== y2);
+      const extra = (diag && displayOrder >= 2) ? 1 : 0;
+      minx = Math.min(minx, mx - extra); maxx = Math.max(maxx, mx + extra);
+      miny = Math.min(miny, my - extra); maxy = Math.max(maxy, my + extra);
     }
     return [[minx, miny], [maxx, maxy]];
   }
@@ -235,6 +255,7 @@ class AsciiMolDrawer {
     } else if (x1 === x2) { // vertical
       return order === 2 ? this.cs.v_double : this.cs.v_single;
     } else { // diagonal
+      // Diagonal orientation; actual multiplicity handled by draw loop (parallel slashes)
       return ((x2 - x1) * (y2 - y1) < 0) ? this.cs.slash : this.cs.backslash;
     }
   }
