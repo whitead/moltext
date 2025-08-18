@@ -313,7 +313,15 @@ export default {
       } else {
         responseContent = `${art}\n`;
       }
-      return new Response(responseContent, { headers: { "content-type": "text/plain; charset=utf-8" } });
+      
+      // Enable very long-lived client-side caching (1 year)
+      const cacheHeaders = {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "public, max-age=31536000, immutable",
+        "expires": new Date(Date.now() + 31536000 * 1000).toUTCString()
+      };
+      
+      return new Response(responseContent, { headers: cacheHeaders });
     } finally { mol.delete(); }
   }
 }
