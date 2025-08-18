@@ -32,5 +32,7 @@
     │ │   │
     C═C─C═C
 
->curl "http://localhost:8787?smi=CC(C)NCC(COC1=CC=CC=C1CC=C)OCC&format=png" --output mol.png
+>curl "https://mol2txt.app?smi=CC(C)NCC(COC1=CC=CC=C1CC=C)OCC&format=png" --output mol.png
 ```
+<img width="375" height="300" alt="mol" src="https://github.com/user-attachments/assets/2cf32ff4-735b-4482-9345-d195cc824529" />
+
