@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@rdkit/rdkit": "^2024.3.5-1.0.0"
+    "@rdkit/rdkit": "^2024.3.5-1.0.0",
+    "@resvg/resvg-wasm": "^2.6.2"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
