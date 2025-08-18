@@ -1,25 +1,102 @@
-declare global {
-  const __dirname: string;
-}
-(globalThis as any).__dirname = "./"; // stub value
+// worker.ts
+declare global { const __dirname: string; }
+(globalThis as any).__dirname = "./"; // stub value for libs that probe __dirname
 
+// --- RDKit.js setup (WASM, no fetch/fs) ---
 import initRDKitModule from "@rdkit/rdkit";
 import rdkitWasm from "@rdkit/rdkit/Code/MinimalLib/dist/RDKit_minimal.wasm";
 
-let RDKitReady = (async () => {
-  // override Emscripten WASM load so no fs/fetch is used
+// --- resvg-wasm for SVG -> PNG in Workers (no Canvas needed) ---
+import { Resvg, initWasm as initResvgWasm } from "@resvg/resvg-wasm";
+import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
+
+// Initialize RDKit once with a custom instantiateWasm that avoids fetch/fs
+const RDKitReady = (async () => {
   const RDKit = await initRDKitModule({
-    instantiateWasm(imports: WebAssembly.Imports, done: (inst: WebAssembly.Instance, mod: WebAssembly.Module) => void) {
-      const instance = new WebAssembly.Instance(rdkitWasm as unknown as WebAssembly.Module, imports);
+    instantiateWasm(
+      imports: WebAssembly.Imports,
+      done: (inst: WebAssembly.Instance, mod: WebAssembly.Module) => void
+    ) {
+      const instance = new WebAssembly.Instance(
+        rdkitWasm as unknown as WebAssembly.Module,
+        imports
+      );
       done(instance, rdkitWasm as unknown as WebAssembly.Module);
       // @ts-ignore
       return instance.exports;
-    }
+    },
   } as any);
   return RDKit;
 })();
 
+// Initialize resvg WASM once (safe in Workers as a module import)
+const ResvgReady = initResvgWasm(resvgWasm);
+
+// ----------------- Types & helpers -----------------
 type Bond = { i: number; j: number; order: number };
+type Pt = [number, number];
+
+function wantFormat(req: Request): "text" | "svg" | "png" {
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("image/png")) return "png";
+  if (ct.includes("image/svg+xml")) return "svg";
+  return "text";
+}
+
+
+// Force ALL paints to a single gray/black, regardless of how RDKit colored them.
+function toMonochrome(svg: string, gray = "#151515"): string {
+  let s = svg;
+
+  // 1) Presentation attributes (handle single OR double quotes)
+  //    e.g. fill='#FF0000'  or  stroke="#0000FF"
+  s = s.replace(/\b(stroke|fill)=(['"])(?!none)[^'"]*\2/g, (_m, prop, q) => {
+    return `${prop}=${q}${gray}${q}`;
+  });
+
+  // 2) Inline style='' or style="" blocks (handle both quote types)
+  //    e.g. style='fill:#FF0000;stroke:#0000FF'
+  s = s.replace(/style=(['"])(.*?)\1/g, (_m, q, style) => {
+    const patched = String(style)
+      .replace(/\bfill\s*:\s*(?!none)[^;"]+/g, `fill:${gray}`)
+      .replace(/\bstroke\s*:\s*(?!none)[^;"]+/g, `stroke:${gray}`);
+    return `style=${q}${patched}${q}`;
+  });
+
+  return s;
+}
+
+
+
+function drawSvgFromMol(mol: any): string {
+  // Prefer JS-exposed drawer options via get_svg_with_highlights; we supply a minimal set
+  // and do a small post-process to ensure B/W + background alpha.
+  const opts = JSON.stringify({
+    includeMetadata: false,
+    clearBackground: false,          // we'll inject the rect ourselves
+    backgroundColour: [1, 1, 1],     // RDKit expects 0..1
+  });
+  let svg = mol.get_svg_with_highlights(opts) as string; // falls back to plain draw if no highlights specified
+  svg = toMonochrome(svg);
+  return svg;
+}
+
+async function svgToPng(svg: string, dpi?: number): Promise<Uint8Array> {
+  await ResvgReady;
+
+  // Default CSS DPI is 96; scale >1 = more pixels (sharper)
+  const effectiveDpi = (Number.isFinite(dpi) && (dpi as number) > 0) ? (dpi as number) : 192; // default 2x
+  const scale = effectiveDpi / 96;
+
+  const resvg = new Resvg(svg, {
+    dpi: effectiveDpi,                 // for physical units inside the SVG
+    fitTo: { mode: "zoom", value: scale }, // upscale pixels for sharper PNG
+    background: 'rgba(255, 255, 255, 1.0)',
+  });
+
+  return resvg.render().asPng();
+}
+
 function parseV2000Molblock(mb: string): {
   coords: [number, number][], symbols: string[], charges: number[], bonds: Bond[]
 } {
@@ -96,8 +173,6 @@ class CharSet {
     return c;
   }
 }
-
-type Pt = [number, number];
 
 const LINE_CHARS_ASCII = "-|\\/=#+";
 const LINE_CHARS_UNI   = "─│╱╲═║≡┼+";
@@ -261,31 +336,32 @@ class AsciiMolDrawer {
   }
 }
 
-
+// ----------------- Worker entry -----------------
 export default {
- async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
-    // Choose a key: IP for public traffic (simple), or API key/user id if available.
-    // Cloudflare docs recommend stable user/tenant identifiers over IPs.
     const ip = req.headers.get("cf-connecting-ip") || "unknown";
-    const key = `public:${ip}`; // or: `key:${req.headers.get('authorization')}`
+    const key = `public:${ip}`;
 
-    // Check the limiter before doing RDKit work
-    const { success, remaining, reset } = await env.PUBLIC_RL.limit({ key });
+    const { success } = await env.PUBLIC_RL.limit({ key });
     if (!success) {
-      // optional: tell the client when to retry
-      const headers = new Headers({ "Retry-After": "60", "Content-Type": "text/plain; charset=utf-8" });
-      return new Response("429 Too Many Requests – limit is 100/min", { status: 429, headers });
+      return new Response("429 Too Many Requests – limit is 100/min", {
+        status: 429,
+        headers: { "Retry-After": "60", "Content-Type": "text/plain; charset=utf-8" },
+      });
     }
 
     const nameParam = url.searchParams.get("name");
     const smiParam = url.searchParams.get("smi");
     const echoSmi = url.searchParams.get("echo") === "1";
+    const dpiParam = parseFloat(url.searchParams.get("dpi") || "288");
+    const fmt = url.searchParams.get("format") || wantFormat(req);
+
     if (nameParam && smiParam) {
       return new Response("Both 'name' and 'smi' provided; supply only one.", {
         status: 422,
-        headers: { "content-type": "text/plain; charset=utf-8" }
+        headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
 
@@ -295,57 +371,79 @@ export default {
         const r = await fetch(env.OPSIN_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: String(nameParam) })
+          body: JSON.stringify({ name: String(nameParam) }),
         });
         if (!r.ok) {
           return new Response(`Name-to-SMILES conversion failed (HTTP ${r.status})`, {
-            status: 400,
-            headers: { "content-type": "text/plain; charset=utf-8" }
+            status: 400, headers: { "content-type": "text/plain; charset=utf-8" },
           });
         }
-        const data = await r.json() as { success?: boolean; smiles?: string };
+        const data = (await r.json()) as { success?: boolean; smiles?: string };
         if (!data?.success || !data?.smiles) {
           return new Response("Name-to-SMILES conversion failed", {
-            status: 400,
-            headers: { "content-type": "text/plain; charset=utf-8" }
+            status: 400, headers: { "content-type": "text/plain; charset=utf-8" },
           });
         }
         smi = String(data.smiles);
-      } catch (e) {
+      } catch {
         return new Response("Name-to-SMILES conversion error", {
-          status: 400,
-          headers: { "content-type": "text/plain; charset=utf-8" }
+          status: 400, headers: { "content-type": "text/plain; charset=utf-8" },
         });
       }
     }
 
-    const RDKit = await RDKitReady;       // already initialized at startup
+    const RDKit = await RDKitReady;
     if (!smi) return new Response("Usage: /?smi=c1ccccc1 or /?name=acetamide", { status: 400 });
+
 
     const mol = RDKit.get_mol(String(smi));
     if (!mol) return new Response("Invalid SMILES", { status: 400 });
     try {
       if (!mol.has_coords()) mol.set_new_coords(true);
-      const molblock = mol.get_molblock();
-      const art = new AsciiMolDrawer(1.1, url.searchParams.get("ascii") !== "1").drawMolblock(molblock);
-      let responseContent;
-      if (echoSmi) {
-        responseContent = `${smi}\n${art}\n`;
-      } else {
-        responseContent = `${art}\n`;
+      mol.straighten_depiction(); // Python's StraightenDepiction
+
+      if (fmt === "text") {
+        const molblock = mol.get_molblock();
+        const art = new AsciiMolDrawer(1.1).drawMolblock(molblock);
+        const body = echoSmi ? `${smi}\n${art}\n` : `${art}\n`;
+        return new Response(body, {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "cache-control": "public, max-age=31536000, immutable",
+            "expires": new Date(Date.now() + 31536000 * 1000).toUTCString(),
+          },
+        });
       }
-      
-      // Enable very long-lived client-side caching (1 year)
-      const cacheHeaders = {
-        "content-type": "text/plain; charset=utf-8",
-        "cache-control": "public, max-age=31536000, immutable",
-        "expires": new Date(Date.now() + 31536000 * 1000).toUTCString()
-      };
-      
-      return new Response(responseContent, { headers: cacheHeaders });
-    } finally { mol.delete(); }
-  }
-}
+
+      // SVG path (monochrome + optional background opacity)
+      const svg = drawSvgFromMol(mol);
+
+      if (fmt === "svg") {
+        // Optionally embed the SMILES as a comment for traceability
+        const payload = echoSmi ? svg.replace(/<svg[^>]*>/, (m) => `${m}\n<!-- SMILES: ${smi} -->`) : svg;
+        return new Response(payload, {
+          headers: {
+            "content-type": "image/svg+xml; charset=utf-8",
+            "cache-control": "public, max-age=31536000, immutable",
+            "expires": new Date(Date.now() + 31536000 * 1000).toUTCString(),
+          },
+        });
+      }
+
+      // PNG path: rasterize SVG using resvg WASM (no Canvas)
+      const pngBytes = await svgToPng(svg, Number.isFinite(dpiParam) ? dpiParam : undefined);
+      return new Response(pngBytes, {
+        headers: {
+          "content-type": "image/png",
+          "cache-control": "public, max-age=31536000, immutable",
+          "expires": new Date(Date.now() + 31536000 * 1000).toUTCString(),
+        },
+      });
+    } finally {
+      mol.delete();
+    }
+  },
+};
 
 interface Env {
   PUBLIC_RL: {
