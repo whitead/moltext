@@ -6,6 +6,26 @@ declare global {
 import initRDKitModule from "@rdkit/rdkit";
 import rdkitWasm from "@rdkit/rdkit/Code/MinimalLib/dist/RDKit_minimal.wasm";
 
+
+// Import emojis data
+const emojis: Record<string, string> = {
+  "H": "⭐️", "He": "🎈", "Li": "🔋", "Be": "🛰", "B": "🔬", "C": "✏️", "N": "🌱", "O": "🫁", 
+  "F": "🪥", "Ne": "🌃", "Na": "🍟", "Mg": "💥", "Al": "✈️", "Si": "🖥", "P": "✨", "S": "🌋", 
+  "Cl": "🏊", "Ar": "🛡", "K": "🍌", "Ca": "🥛", "Sc": "🚲", "Ti": "🦾", "V": "🎨", "Cr": "✨", 
+  "Mn": "🧲", "Fe": "🔩", "Co": "🔵", "Ni": "🍴", "Cu": "🪙", "Zn": "🧴", "Ga": "🥄", "Ge": "📻", 
+  "As": "💀", "Se": "🌙", "Br": "🧪", "Kr": "🦸", "Rb": "🚨", "Sr": "🎇", "Y": "📺", "Zr": "💎", 
+  "Nb": "🧲", "Mo": "⚓", "Tc": "⚙️", "Ru": "🔬", "Rh": "💍", "Pd": "⚗️", "Ag": "🥈", "Cd": "🏭", 
+  "In": "📱", "Sn": "🤖", "Sb": "👁", "Te": "🌍", "I": "🧴", "Xe": "⚡️", "Cs": "⏱", "Ba": "💊", 
+  "La": "📸", "Ce": "🚛", "Pr": "🟩", "Nd": "🧲", "Pm": "🔦", "Sm": "💉", "Eu": "🇪🇺", "Gd": "🧠", 
+  "Tb": "🟢", "Dy": "💄", "Ho": "🏝", "Er": "📶", "Tm": "❄️", "Yb": "🪨", "Lu": "🗼", "Hf": "🎛", 
+  "Ta": "🔌", "W": "💡", "Re": "🛫", "Os": "🖋", "Ir": "🛰", "Pt": "💰", "Au": "🥇", "Hg": "🌡", 
+  "Tl": "🪤", "Pb": "⚖️", "Bi": "🌈", "Po": "🦆", "At": "⚡️", "Rn": "⚠️", "Fr": "🇫🇷", "Ra": "⌚️", 
+  "Ac": "📡", "Th": "🔨", "Pa": "👩‍👦", "U": "☢️", "Np": "🔱", "Pu": "☢️", "Am": "🚨", "Cm": "👩🏻‍🔬", 
+  "Bk": "🎓", "Cf": "🌞", "Es": "🧠", "Fm": "💯", "Md": "🧮", "No": "🏅", "Lr": "🌀", "Rf": "🎯", 
+  "Db": "🧪", "Sg": "🧑‍🔬", "Bh": "⚛️", "Hs": "🦁", "Mt": "👩‍🔬", "Ds": "🏰", "Rg": "🪻", "Cn": "💫", 
+  "Nh": "🗾", "Fl": "🧪", "Mc": "🏛", "Lv": "💡", "Ts": "🪕", "Og": "🧪"
+};
+
 let RDKitReady = (async () => {
   // override Emscripten WASM load so no fs/fetch is used
   const RDKit = await initRDKitModule({
@@ -129,6 +149,7 @@ class AsciiMolDrawer {
     public max_bumps = 8,
     public show_formal_charge = true,
     public cs = (use_unicode ? new CharSet() : CharSet.ascii()),
+    public use_emojis = false,
   ) {}
 
   drawMolblock(mb: string): string {
@@ -177,7 +198,18 @@ class AsciiMolDrawer {
 
   private _label(sym: string, q: number): string {
     let s = sym.toLowerCase() === "c" ? "C" : sym;
-    if (this.show_formal_charge && q) s += (Math.abs(q) === 1 ? (q > 0 ? "+" : "-") : (q > 0 ? "+" : "-") + Math.abs(q));
+    
+    // In emoji mode, replace element symbol with emoji if available
+    if (this.use_emojis && emojis[sym]) {
+      s = emojis[sym];
+    }
+    
+    // Add formal charge notation
+    if (this.show_formal_charge && q) {
+      const chargeStr = Math.abs(q) === 1 ? (q > 0 ? "+" : "-") : (q > 0 ? "+" : "-") + Math.abs(q);
+      s += chargeStr;
+    }
+    
     return s;
   }
 
@@ -299,14 +331,17 @@ export default {
     }
 
     const RDKit = await RDKitReady;       // already initialized at startup
-    if (!smi) return new Response("Usage: /?smi=c1ccccc1 or /?name=acetamide", { status: 400 });
+    if (!smi) return new Response("Usage: /?smi=c1ccccc1 or /?name=acetamide&emoji=1", { status: 400 });
 
     const mol = RDKit.get_mol(String(smi));
     if (!mol) return new Response("Invalid SMILES", { status: 400 });
     try {
       if (!mol.has_coords()) mol.set_new_coords(true);
       const molblock = mol.get_molblock();
-      const art = new AsciiMolDrawer(1.0, url.searchParams.get("ascii") !== "1").drawMolblock(molblock);
+      
+      const useEmojis = url.searchParams.get("emoji") === "1";
+      const useUnicode = url.searchParams.get("emoji") !== "0"; // default to unicode unless emoji=0
+      const art = new AsciiMolDrawer(3.0, useUnicode, 3, 1.12, 8, true, useUnicode ? new CharSet() : CharSet.ascii(), useEmojis).drawMolblock(molblock);
       let responseContent;
       if (echoSmi) {
         responseContent = `${smi}\n${art}\n`;
