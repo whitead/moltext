@@ -404,7 +404,7 @@ export default {
 
       if (fmt === "text") {
         const molblock = mol.get_molblock();
-        const art = new AsciiMolDrawer(1.1).drawMolblock(molblock);
+        const art = new AsciiMolDrawer(2.0).drawMolblock(molblock);
         const body = echoSmi ? `${smi}\n${art}\n` : `${art}\n`;
         return new Response(body, {
           headers: {
