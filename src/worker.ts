@@ -306,7 +306,7 @@ export default {
     try {
       if (!mol.has_coords()) mol.set_new_coords(true);
       const molblock = mol.get_molblock();
-      const art = new AsciiMolDrawer(2.0, url.searchParams.get("ascii") !== "1").drawMolblock(molblock);
+      const art = new AsciiMolDrawer(1.0, url.searchParams.get("ascii") !== "1").drawMolblock(molblock);
       let responseContent;
       if (echoSmi) {
         responseContent = `${smi}\n${art}\n`;
